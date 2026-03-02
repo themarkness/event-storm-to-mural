@@ -1,11 +1,9 @@
 """
-BaseAgent: runs a Claude model with access to the Mural MCP server tools.
+BaseAgent: runs an LLM with access to the Mural MCP server tools.
 
-The agent loop:
-  1. Send system prompt + user message to Claude
-  2. If Claude calls a Mural tool, execute it via the MCP server subprocess
-  3. Feed the tool result back, repeat until Claude stops calling tools
-  4. Return the final text response
+The MCP server is started once as a stdio subprocess (McpClient).
+Each agent call delegates the tool-use loop to the configured provider
+(Gemini by default, Anthropic if MODEL_PROVIDER=anthropic).
 """
 
 from __future__ import annotations
@@ -13,15 +11,10 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
-from pathlib import Path
 from typing import Any
 
-import anthropic
-
-from src.config import MCP_SERVER_PATH, anthropic_api_key, mural_token
-
-MODEL = "claude-sonnet-4-6"
-MAX_TOKENS = 4096
+from src.config import MCP_SERVER_PATH, model_provider, mural_token
+from src.providers import Provider, make_provider
 
 
 class McpClient:
@@ -50,9 +43,7 @@ class McpClient:
         self._lock = threading.Lock()
         self._tools: list[dict[str, Any]] | None = None
 
-        # Log server stderr in background so it doesn't block
         threading.Thread(target=self._drain_stderr, daemon=True).start()
-
         self._initialize()
 
     def _drain_stderr(self) -> None:
@@ -109,80 +100,29 @@ class McpClient:
         self._proc.terminate()
 
 
-def _mcp_tools_as_anthropic(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert MCP tool descriptors to the shape Anthropic SDK expects."""
-    return [
-        {
-            "name": t["name"],
-            "description": t.get("description", ""),
-            "input_schema": t.get("inputSchema", {"type": "object", "properties": {}}),
-        }
-        for t in mcp_tools
-    ]
-
-
 class BaseAgent:
     """
-    Wraps a Claude call with a system prompt and MCP Mural tools.
+    Wraps an LLM provider call with a system prompt and Mural MCP tools.
     Subclasses set `system_prompt` and `role_name`.
+
+    The active provider is selected by the MODEL_PROVIDER env var:
+      gemini     (default) — free tier via Google AI Studio
+      anthropic            — Anthropic API
     """
 
     role_name: str = "Agent"
     system_prompt: str = "You are a helpful assistant."
 
-    def __init__(self, mcp: McpClient) -> None:
+    def __init__(self, mcp: McpClient, provider: Provider | None = None) -> None:
         self._mcp = mcp
-        self._client = anthropic.Anthropic(api_key=anthropic_api_key())
+        self._provider: Provider = provider or make_provider(model_provider())
 
     def run(self, user_message: str) -> str:
-        """
-        Run the agent on a user message. Handles the tool-use loop automatically.
-        Returns the final text reply from the model.
-        """
-        tools = _mcp_tools_as_anthropic(self._mcp.list_tools())
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
-
-        print(f"[{self.role_name}] thinking...")
-
-        while True:
-            response = self._client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=self.system_prompt,
-                tools=tools,  # type: ignore[arg-type]
-                messages=messages,  # type: ignore[arg-type]
-            )
-
-            # Accumulate assistant response
-            messages.append({"role": "assistant", "content": response.content})
-
-            if response.stop_reason == "end_turn":
-                # Extract final text
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        return block.text
-                return ""
-
-            if response.stop_reason == "tool_use":
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        print(f"[{self.role_name}] calling {block.name}({json.dumps(block.input)[:120]}...)")
-                        result_text = self._mcp.call_tool(block.name, block.input)
-                        print(f"[{self.role_name}] → {result_text[:120]}")
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": result_text,
-                            }
-                        )
-
-                messages.append({"role": "user", "content": tool_results})
-                continue
-
-            # Unexpected stop reason — return whatever text we have
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text
-            return ""
+        """Run the agent, handling the tool-use loop. Returns final text reply."""
+        return self._provider.run_conversation(
+            system=self.system_prompt,
+            user_message=user_message,
+            tools=self._mcp.list_tools(),
+            tool_executor=self._mcp.call_tool,
+            role_name=self.role_name,
+        )
