@@ -1,4 +1,4 @@
-# event-storm-to-mural
+# maps to murals
 
 A Claude Code skill for posting sticky notes to a [Mural](https://www.mural.co/)
 board to support typical product manager mapping processes — event storming,
