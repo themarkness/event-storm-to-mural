@@ -27,12 +27,7 @@ def post_sticky(mural_id: str, token: str, sticky: dict) -> dict:
         "y": sticky["y"],
         "width": sticky.get("width", 200),
         "height": sticky.get("height", 200),
-        "shape": sticky.get("shape", "rectangle"),
-        "style": {
-            "backgroundColor": sticky["color"],
-            "fontSize": 14,
-            "textAlign": "center",
-        },
+        "style": {"backgroundColor": sticky["color"]},
     }
     req = urllib.request.Request(
         f"{API}/murals/{mural_id}/widgets/sticky-note",
@@ -65,21 +60,16 @@ def main() -> int:
         print("Expected a JSON array of stickies", file=sys.stderr)
         return 2
 
-    created = 0
     for i, sticky in enumerate(stickies):
         try:
             result = post_sticky(mural_id, token, sticky)
-            value = result.get("value", result)
-            print(f"{i}: {value.get('id', '?')}  {sticky.get('text', '')[:60]}")
-            created += 1
         except urllib.error.HTTPError as e:
             print(f"{i}: HTTP {e.code} {e.read().decode()}", file=sys.stderr)
             return 1
-        except Exception as e:  # noqa: BLE001
-            print(f"{i}: {e}", file=sys.stderr)
-            return 1
+        value = result.get("value", result)
+        print(f"{i}: {value.get('id', '?')}  {sticky.get('text', '')[:60]}")
 
-    print(f"Created {created}/{len(stickies)} stickies", file=sys.stderr)
+    print(f"Created {len(stickies)} stickies", file=sys.stderr)
     return 0
 
 
