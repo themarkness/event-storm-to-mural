@@ -1,9 +1,3 @@
 .env
-.venv/
 __pycache__/
 *.pyc
-*.pyo
-mural-mcp/node_modules/
-mural-mcp/dist/
-*.egg-info/
-dist/
